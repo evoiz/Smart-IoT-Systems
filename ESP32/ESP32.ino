@@ -15,13 +15,20 @@
 #define DHT_TYPE DHT22
 
 // WiFi Credentials
-const char* ssid = "Kali";
-const char* password = "y=e^(cos(xy))";
+const char* ssid = "esp32";
+const char* password = "123456789";
 
 struct RoomConfig {
   int8_t dht_pin = -1;
   int8_t gas_pin = -1;
   bool initialized = false;
+
+  bool validate() const {
+    bool valid = true;
+    if(dht_pin != -1) valid &= (dht_pin >= MIN_GPIO && dht_pin <= MAX_GPIO);
+    if(gas_pin != -1) valid &= (gas_pin >= MIN_GPIO && gas_pin <= MAX_GPIO);
+    return valid;
+  }
 };
 
 class ESP32Room {
@@ -48,6 +55,10 @@ public:
     config = cfg;
     if(validGPIO(config.dht_pin)) {
       dht = new DHT(config.dht_pin, DHT_TYPE);
+      if(dht == nullptr) {
+        Serial.println("Failed to allocate DHT object");
+        return false;
+      }
       dht->begin();
     }
     if(validGPIO(config.gas_pin)) {
@@ -127,15 +138,9 @@ void loop() {
 }
 
 void initWiFi() {
-  WiFi.mode(WIFI_STA);
+  WiFi.mode(WIFI_AP);
   WiFi.setSleep(false);
-  WiFi.begin(ssid, password);
-  
-  while(WiFi.status() != WL_CONNECTED) {
-    delay(250);
-    Serial.print('.');
-  }
-  Serial.println("\nConnected: " + WiFi.localIP().toString());
+  WiFi.softAP(ssid, password);
 }
 
 void sensorTask(void* parameter) {
@@ -213,12 +218,4 @@ void handleUDPPacket(AsyncUDPPacket packet) {
                      
     packet.printf(response.c_str());
   }
-}
-
-// Add to RoomConfig struct
-bool RoomConfig::validate() const {
-  bool valid = true;
-  if(dht_pin != -1) valid &= (dht_pin >= MIN_GPIO && dht_pin <= MAX_GPIO);
-  if(gas_pin != -1) valid &= (gas_pin >= MIN_GPIO && gas_pin <= MAX_GPIO);
-  return valid;
 }

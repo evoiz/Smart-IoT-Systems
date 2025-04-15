@@ -12,8 +12,11 @@
 #define MAX_GPIO 16
 #define JSON_SIZE 128
 
-const char* ssid = "Kali";
-const char* password = "y=e^(cos(xy))";
+// const char* ssid = "Kali";
+// const char* password = "y=e^(cos(xy))";
+
+const char* ssid = "Hnndes";
+const char* password = "58KMCHqR";
 
 struct RoomConfig {
   int8_t dht_pin = -1;
