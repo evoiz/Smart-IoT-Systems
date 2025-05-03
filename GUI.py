@@ -1,99 +1,198 @@
+import sys
 import socket
-import tkinter as tk
-from tkinter import ttk, messagebox
-from threading import Thread
+import logging
+from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QMessageBox, QDialog, QTextEdit
+from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt
 import requests
+import json
 
-class EnvironmentMonitor:
-    def __init__(self, master):
-        self.master = master
-        master.title("Environment Monitor")
-        
-        self.setup_ui()
-        self.devices = []
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
-    def setup_ui(self):
-        self.btn_scan = ttk.Button(self.master, text="Scan Network", command=self.start_scan)
-        self.btn_scan.pack(pady=10)
+class NetworkThread(QThread):
+    devicesFound = pyqtSignal(list)
 
-        self.tree = ttk.Treeview(self.master, columns=('Name', 'MAC', 'IP', 'Rooms'), show='headings')
-        self.tree.heading('Name', text='Device Name')
-        self.tree.heading('MAC', text='MAC Address')
-        self.tree.heading('IP', text='IP Address')
-        self.tree.heading('Rooms', text='Rooms')
-        self.tree.pack(padx=10, pady=10, fill='both', expand=True)
-        
-        self.tree.bind('<<TreeviewSelect>>', self.show_room_data)
-
-    def start_scan(self):
-        Thread(target=self.discover_devices, daemon=True).start()
-
-    def discover_devices(self):
-        self.btn_scan.config(state=tk.DISABLED)
-        self.tree.delete(*self.tree.get_children())
-        
+    def run(self):
+        logger.info("Starting network discovery")
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.settimeout(2)
-        
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.sendto("DISCOVER".encode(), ("255.255.255.255", 1234))
+        devices = []
         try:
-            sock.sendto(b"DISCOVER_DEVICES", ("255.255.255.255", 1234))
             while True:
-                try:
-                    data, addr = sock.recvfrom(1024)
-                    device_info = data.decode().split(',')
-                    if len(device_info) == 4:
-                        self.tree.insert('', 'end', values=(
-                            device_info[0], 
-                            device_info[1], 
-                            device_info[2], 
-                            device_info[3]
-                        ))
-                except socket.timeout:
-                    break
-        except Exception as e:
-            messagebox.showerror("Error", f"Scan failed: {str(e)}")
-        finally:
-            self.btn_scan.config(state=tk.NORMAL)
-            sock.close()
+                data, addr = sock.recvfrom(1024)
+                parts = data.decode().split(",")
+                devices.append({"name": parts[0], "mac": parts[1], "ip": parts[2], "rooms": int(parts[3])})
+        except socket.timeout:
+            pass
+        sock.close()
+        logger.info(f"Discovered {len(devices)} devices")
+        self.devicesFound.emit(devices)
 
-    def show_room_data(self, event):
-        selected = self.tree.selection()
-        if not selected:
+class RoomDataDialog(QDialog):
+    def __init__(self, ip, rooms, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Room Data for {ip}")
+        self.setGeometry(200, 200, 400, 300)
+        layout = QVBoxLayout(self)
+
+        # Text area to display room data
+        self.text_edit = QTextEdit()
+        self.text_edit.setReadOnly(True)
+        layout.addWidget(self.text_edit)
+
+        # Fetch and display room data
+        self.fetch_room_data(ip, rooms)
+
+    def fetch_room_data(self, ip, rooms):
+        data_text = ""
+        for room_id in range(1, rooms + 1):
+            logger.info(f"Fetching data for room {room_id} from {ip}")
+            try:
+                response = requests.get(f"http://{ip}/room/{room_id}", timeout=5)
+                response.raise_for_status()
+                data = response.json()
+                logger.info(f"Successfully fetched data for room {room_id} from {ip}")
+                data_text += (f"Room {room_id}:\n"
+                              f"  Temperature: {data['temperature']}°C\n"
+                              f"  Humidity: {data['humidity']}%\n"
+                              f"  Gas Level: {data['gas_level']} ppm\n\n")
+            except requests.RequestException as e:
+                logger.error(f"Failed to fetch data for room {room_id} from {ip}: {str(e)}")
+                data_text += f"Room {room_id}: Failed to fetch data ({str(e)})\n\n"
+        self.text_edit.setText(data_text)
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Environmental Monitoring")
+        self.setGeometry(100, 100, 800, 600)
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.layout = QVBoxLayout(self.central_widget)
+
+        # Device table
+        self.device_table = QTableWidget(0, 4)
+        self.device_table.setHorizontalHeaderLabels(["Name", "MAC", "IP", "Rooms"])
+        self.device_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)  # Make table non-editable
+        self.device_table.cellClicked.connect(self.on_device_select)
+        self.device_table.doubleClicked.connect(self.on_row_double_clicked)  # Handle double-click
+        self.layout.addWidget(self.device_table)
+
+        # Auto-scan toggle button (placed below the table)
+        self.auto_scan_btn = QPushButton("Start Auto-Scan")
+        self.auto_scan_btn.clicked.connect(self.toggle_auto_scan)
+        self.layout.addWidget(self.auto_scan_btn)
+
+        self.selected_ip = None
+        self.is_auto_scanning = False
+        self.scan_timer = QTimer(self)
+        self.scan_timer.timeout.connect(self.scan_network)
+        self.thread = None  # Initialize thread as None
+
+    def scan_network(self):
+        if self.thread is not None and self.thread.isRunning():
+            logger.info("Scan already in progress, skipping")
             return
-            
-        device_ip = self.tree.item(selected[0])['values'][2]
-        rooms = int(self.tree.item(selected[0])['values'][3])
         
-        room_window = tk.Toplevel(self.master)
-        room_window.title(f"Room Data - {device_ip}")
-        
-        for room_num in range(1, rooms+1):
-            frame = ttk.Frame(room_window)
-            frame.pack(fill='x', padx=5, pady=2)
-            
-            ttk.Label(frame, text=f"Room {room_num}:").pack(side=tk.LEFT)
-            ttk.Button(frame, text="View", 
-                      command=lambda ip=device_ip, rn=room_num: 
-                          self.display_room_details(ip, rn)).pack(side=tk.RIGHT)
+        logger.info("Initiating network scan")
+        self.thread = NetworkThread()
+        self.thread.devicesFound.connect(self.display_devices)
+        self.thread.finished.connect(self.on_thread_finished)
+        self.thread.start()
 
-    def display_room_details(self, ip, room_num):
+    def on_thread_finished(self):
+        self.thread = None
+        logger.info("Network scan thread finished")
+
+    def toggle_auto_scan(self):
+        if self.is_auto_scanning:
+            self.scan_timer.stop()
+            self.is_auto_scanning = False
+            self.auto_scan_btn.setText("Start Auto-Scan")
+            logger.info("Auto-scan stopped")
+        else:
+            self.scan_timer.start(10000)  # Scan every 10 seconds
+            self.is_auto_scanning = True
+            self.auto_scan_btn.setText("Stop Auto-Scan")
+            logger.info("Auto-scan started")
+            self.scan_network()
+
+    def display_devices(self, devices):
+        if not devices and not self.is_auto_scanning:
+            logger.warning("No devices found during scan")
+            QMessageBox.warning(self, "Error", "No devices found")
+
+        current_devices = {}
+        for row in range(self.device_table.rowCount()):
+            ip = self.device_table.item(row, 2).text()
+            current_devices[ip] = {
+                "name": self.device_table.item(row, 0).text(),
+                "mac": self.device_table.item(row, 1).text(),
+                "rooms": int(self.device_table.item(row, 3).text())
+            }
+
+        for i in reversed(range(self.layout.count())):
+            widget = self.layout.itemAt(i).widget()
+            if isinstance(widget, QPushButton) and widget.text().startswith("Room "):
+                widget.deleteLater()
+
+        self.device_table.setRowCount(len(devices))
+        for i, device in enumerate(devices):
+            if device["ip"] in current_devices:
+                if (current_devices[device["ip"]]["name"] != device["name"] or
+                    current_devices[device["ip"]]["mac"] != device["mac"] or
+                    current_devices[device["ip"]]["rooms"] != device["rooms"]):
+                    self.device_table.setItem(i, 0, QTableWidgetItem(device["name"]))
+                    self.device_table.setItem(i, 1, QTableWidgetItem(device["mac"]))
+                    self.device_table.setItem(i, 2, QTableWidgetItem(device["ip"]))
+                    self.device_table.setItem(i, 3, QTableWidgetItem(str(device["rooms"])))
+            else:
+                self.device_table.setItem(i, 0, QTableWidgetItem(device["name"]))
+                self.device_table.setItem(i, 1, QTableWidgetItem(device["mac"]))
+                self.device_table.setItem(i, 2, QTableWidgetItem(device["ip"]))
+                self.device_table.setItem(i, 3, QTableWidgetItem(str(device["rooms"])))
+
+            for j in range(device["rooms"]):
+                btn = QPushButton(f"Room {j+1}")
+                btn.clicked.connect(lambda _, ip=device["ip"], id=j+1: self.get_room_data(ip, id))
+                self.layout.insertWidget(self.layout.count() - 1, btn)
+
+        logger.info(f"Updated device table with {len(devices)} devices")
+
+    def on_device_select(self, row, column):
+        self.selected_ip = self.device_table.item(row, 2).text()
+        logger.info(f"Selected device with IP: {self.selected_ip}")
+
+    def on_row_double_clicked(self, index):
+        row = index.row()
+        ip = self.device_table.item(row, 2).text()
+        rooms = int(self.device_table.item(row, 3).text())
+        logger.info(f"Double-clicked on device {ip}, opening room data dialog")
+        dialog = RoomDataDialog(ip, rooms, self)
+        dialog.exec()
+
+    def get_room_data(self, ip, room_id):
+        logger.info(f"Requesting data for room {room_id} from {ip}")
         try:
-            response = requests.get(f"http://{ip}/room{room_num}", timeout=2)
+            response = requests.get(f"http://{ip}/room/{room_id}", timeout=5)
+            response.raise_for_status()
             data = response.json()
-            
-            detail_window = tk.Toplevel(self.master)
-            detail_window.title(f"Room {room_num} Details")
-            
-            ttk.Label(detail_window, text=f"Temperature: {data['temperature']}°C").pack()
-            ttk.Label(detail_window, text=f"Humidity: {data['humidity']}%").pack()
-            ttk.Label(detail_window, text=f"Gas Level: {data['gas']}").pack()
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to get data: {str(e)}")
+            logger.info(f"Successfully fetched data for room {room_id} from {ip}")
+            msg = f"Temperature: {data['temperature']}°C\nHumidity: {data['humidity']}%\nGas Level: {data['gas_level']} ppm"
+            QMessageBox.information(self, f"Room {room_id}", msg)
+        except requests.RequestException as e:
+            logger.error(f"Failed to fetch data for room {room_id} from {ip}: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to connect to device: {str(e)}")
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = EnvironmentMonitor(root)
-    root.geometry("800x600")
-    root.mainloop()
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
