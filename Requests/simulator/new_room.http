@@ -1,0 +1,57 @@
+# Create Room 1
+POST http://localhost/room HTTP/1.1
+Content-Type: application/json
+
+{
+  "room_id": 1,
+  "dht22_pin": 4,
+  "gas_pin": 5
+}
+
+###
+
+# Create Room 2
+POST http://localhost/room HTTP/1.1
+Content-Type: application/json
+
+{
+  "room_id": 2,
+  "dht22_pin": 12,
+  "gas_pin": 13
+}
+
+###
+
+# Create Room 3
+POST http://localhost/room HTTP/1.1
+Content-Type: application/json
+
+{
+  "room_id": 3,
+  "dht22_pin": 14,
+  "gas_pin": 15
+}
+
+###
+
+# Create Room 4
+POST http://localhost/room HTTP/1.1
+Content-Type: application/json
+
+{
+  "room_id": 4,
+  "dht22_pin": 16,
+  "gas_pin": 17
+}
+
+###
+
+# Create Room 5
+POST http://localhost/room HTTP/1.1
+Content-Type: application/json
+
+{
+  "room_id": 5,
+  "dht22_pin": 18,
+  "gas_pin": 19
+}

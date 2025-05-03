@@ -1,0 +1,9 @@
+# Create a new room on the ESP32 simulator
+POST http://localhost/room HTTP/1.1
+Content-Type: application/json
+
+{
+  "room_id": 1,
+  "dht22_pin": 4,
+  "gas_pin": 5
+}
