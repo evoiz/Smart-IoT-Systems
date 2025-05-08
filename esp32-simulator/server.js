@@ -6,13 +6,17 @@ const udpServer = dgram.createSocket("udp4");
 // Middleware to parse JSON bodies
 app.use(express.json());
 
+// Get ports from .env or use defaults
+const HTTP_PORT = process.env.HTTP_PORT || 3000;
+const UDP_PORT = process.env.UDP_PORT || 1234;
+
 // Simulated room data
 let rooms = [];
 const MAX_ROOMS = 5;
 
 // Simulated MAC and IP (for UDP discovery)
 const MAC_ADDRESS = "00:1A:2B:3C:4D:5E";
-const IP_ADDRESS = "127.0.0.1";
+const IP_ADDRESS = `127.0.0.1:${HTTP_PORT}`;
 
 // UDP Discovery Server
 udpServer.on("message", (msg, rinfo) => {
@@ -25,11 +29,11 @@ udpServer.on("message", (msg, rinfo) => {
   }
 });
 
-udpServer.on("listening", () => {
-  console.log("UDP server listening on port 1234");
+// UDP Server setup
+udpServer.bind(UDP_PORT, () => {
+  console.log(`UDP server listening on port ${UDP_PORT}`);
 });
 
-udpServer.bind(1234);
 
 // POST /room - Create a new room
 app.post("/room", (req, res) => {
@@ -94,6 +98,7 @@ setInterval(() => {
 }, 2000);
 
 // Start HTTP server
-app.listen(80, () => {
-  console.log("HTTP server listening on port 80");
+// HTTP Server setup
+app.listen(HTTP_PORT, () => {
+  console.log(`HTTP server listening on port ${HTTP_PORT}`);
 });
