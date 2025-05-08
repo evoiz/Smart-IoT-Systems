@@ -4,154 +4,228 @@
 #include <DHT.h>
 #include <ArduinoJson.h>
 #include <SPIFFS.h>
+#include <uri/UriBraces.h>  
+#include <uri/UriRegex.h>     
+
+// Config file path on SPIFFS
+const char* configPath = "/config.json";
+
+// WiFi credentials (loaded from config)
+String ssid;
+String password;
 
 // Server and UDP
 WebServer server(80);
 WiFiUDP udp;
 const int UDP_PORT = 1234;
 
-// DHT22 Sensor
+// DHT Sensor type
 #define DHTTYPE DHT22
-struct Room {
+
+// Maximum rooms
+#define MAX_ROOMS 16
+
+// Default pins for each room (actuator, DHT, gas)
+const int defaultActuatorPins[MAX_ROOMS] = {2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26};
+const int defaultDHTPins[MAX_ROOMS]      = {32, 33, 34, 35, 36, 39, 32, 33, 34, 35, 36, 39, 32, 33, 34, 35};
+const int defaultGasPins[MAX_ROOMS]      = {36, 39, 32, 33, 34, 35, 36, 39, 32, 33, 34, 35, 36, 39, 32, 33};
+
+// Room configuration and sensor structure
+struct RoomConfig {
   int id;
+  String name;
+  int actuatorPin;
   int dhtPin;
   int gasPin;
+  bool active;
+  DHT* dht;
   float temp;
   float hum;
   int gas;
-  bool active;
-  DHT *dht;
 };
-Room rooms[5];
+
+RoomConfig rooms[MAX_ROOMS];
 int roomCount = 0;
 
-// Task handle for sensor reading
-TaskHandle_t sensorTask;
+// Create default config.json in SPIFFS
+void createDefaultConfig() {
+  DynamicJsonDocument doc(4096);
+  doc["wifi"]["ssid"] = "evoiz";
+  doc["wifi"]["password"] = "eee1998eee";
 
-// Global WiFi settings
-String ssid;
-String password;
-String default_ssid="default_ssid";
-String default_password="default_password";
-
-
-// Connect to WiFi
-void connectWiFi() {
-  Serial.begin(115200);
-  WiFi.begin(ssid.c_str(), password.c_str());
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  JsonArray roomArray = doc.createNestedArray("rooms");
+  for (int i = 0; i < MAX_ROOMS; i++) {
+    JsonObject obj = roomArray.createNestedObject();
+    obj["id"] = i + 1;
+    obj["name"] = "Room " + String(i + 1);
+    obj["actuatorPin"] = defaultActuatorPins[i];
+    obj["dhtPin"] = defaultDHTPins[i];
+    obj["gasPin"] = defaultGasPins[i];
+    obj["active"] = false;
   }
-  Serial.println("\nConnected to WiFi");
-  Serial.println(WiFi.localIP());
+
+  File f = SPIFFS.open(configPath, FILE_WRITE);
+  if (f) {
+    serializeJson(doc, f);
+    f.close();
+    Serial.println("Default config created");
+  } else {
+    Serial.println("Failed to create default config");
+  }
 }
 
-// Load configuration from SPIFFS
-void loadConfig() {
-  // Check if config file exists
-  if (!SPIFFS.exists("/config.json")) {
-    Serial.println("Config file not found, creating default configuration");
-    // Create default JSON configuration
-    DynamicJsonDocument doc(1024);
-    doc["wifi"]["ssid"] = default_ssid;
-    doc["wifi"]["password"] = default_password;
-    JsonArray roomsArray = doc.createNestedArray("rooms");
-
-    // Save default configuration to SPIFFS
-    File file = SPIFFS.open("/config.json", "w");
-    if (!file) {
-      Serial.println("Failed to create config file");
-      return;
-    }
-    serializeJson(doc, file);
-    file.close();
-    Serial.println("Default configuration saved successfully");
+// Load config from SPIFFS or create default
+bool loadConfig() {
+  if (!SPIFFS.exists(configPath)) {
+    Serial.println("Config not found, creating default");
+    createDefaultConfig();
   }
-
-  // Load configuration from file
-  File file = SPIFFS.open("/config.json", "r");
-  if (!file) {
-    Serial.println("Failed to open config file");
-    ssid = default_ssid;
-    password = default_password;
-    roomCount = 0;
-    return;
+  File f = SPIFFS.open(configPath, FILE_READ);
+  if (!f) {
+    Serial.println("Failed to open config, recreating default");
+    createDefaultConfig();
+    return loadConfig();
   }
-  DynamicJsonDocument doc(1024);
-  DeserializationError error = deserializeJson(doc, file);
-  if (error) {
-    Serial.println("Failed to parse config JSON");
-    ssid = default_ssid;
-    password = default_password;
-    roomCount = 0;
-    file.close();
-    return;
+  DynamicJsonDocument doc(4096);
+  auto err = deserializeJson(doc, f);
+  f.close();
+  if (err) {
+    Serial.println("Config parse error, recreating default");
+    SPIFFS.remove(configPath);
+    createDefaultConfig();
+    return loadConfig();
   }
-  Serial.println("successful to parse config JSON");
   ssid = doc["wifi"]["ssid"].as<String>();
   password = doc["wifi"]["password"].as<String>();
-  JsonArray roomsArray = doc["rooms"];
-  roomCount = roomsArray.size();
-  for (int i = 0; i < roomCount && i < 5; i++) {
-    rooms[i].id = roomsArray[i]["id"];
-    rooms[i].dhtPin = roomsArray[i]["dhtPin"];
-    rooms[i].gasPin = roomsArray[i]["gasPin"];
-    rooms[i].active = roomsArray[i]["active"];
+  JsonArray arr = doc["rooms"].as<JsonArray>();
+  roomCount = arr.size();
+  for (int i = 0; i < roomCount && i < MAX_ROOMS; i++) {
+    rooms[i].id = arr[i]["id"].as<int>();
+    rooms[i].name = arr[i]["name"].as<String>();
+    rooms[i].actuatorPin = arr[i]["actuatorPin"].as<int>();
+    rooms[i].dhtPin = arr[i]["dhtPin"].as<int>();
+    rooms[i].gasPin = arr[i]["gasPin"].as<int>();
+    rooms[i].active = arr[i]["active"].as<bool>();
     rooms[i].dht = new DHT(rooms[i].dhtPin, DHTTYPE);
     rooms[i].dht->begin();
   }
-  file.close();
+  return true;
 }
 
-// Save configuration to SPIFFS
+// Save config back to SPIFFS
 void saveConfig() {
-  DynamicJsonDocument doc(1024);
+  DynamicJsonDocument doc(4096);
   doc["wifi"]["ssid"] = ssid;
   doc["wifi"]["password"] = password;
-  JsonArray roomsArray = doc.createNestedArray("rooms");
+  JsonArray roomArray = doc.createNestedArray("rooms");
   for (int i = 0; i < roomCount; i++) {
-    JsonObject room = roomsArray.createNestedObject();
-    room["id"] = rooms[i].id;
-    room["dhtPin"] = rooms[i].dhtPin;
-    room["gasPin"] = rooms[i].gasPin;
-    room["active"] = rooms[i].active;
+    JsonObject obj = roomArray.createNestedObject();
+    obj["id"] = rooms[i].id;
+    obj["name"] = rooms[i].name;
+    obj["actuatorPin"] = rooms[i].actuatorPin;
+    obj["dhtPin"] = rooms[i].dhtPin;
+    obj["gasPin"] = rooms[i].gasPin;
+    obj["active"] = rooms[i].active;
   }
-  File file = SPIFFS.open("/config.json", "w");
-  if (!file) {
-    Serial.println("Failed to open config file for writing");
-    return;
+  File f = SPIFFS.open(configPath, FILE_WRITE);
+  if (f) {
+    serializeJson(doc, f);
+    f.close();
   }
-  serializeJson(doc, file);
-  file.close();
 }
 
-// Handle POST /config
+// Helper to log route and params
+void logRequest(const String& route) {
+  Serial.print("[HTTP] Route: ");
+  Serial.println(route);
+  if (server.args() > 0) {
+    for (int i = 0; i < server.args(); i++) {
+      Serial.print("  Param: ");
+      Serial.print(server.argName(i));
+      Serial.print(" = ");
+      Serial.println(server.arg(i));
+    }
+  }
+}
+
+// HTTP: POST /config
 void handlePostConfig() {
+  logRequest("POST /config");  // log route
   if (!server.hasArg("plain")) {
     server.send(400, "text/plain", "No JSON data provided");
     return;
   }
   String json = server.arg("plain");
-  File file = SPIFFS.open("/config.json", "w");
-  if (!file) {
-    server.send(500, "text/plain", "Failed to save config");
-    return;
+  DynamicJsonDocument doc(4096);
+  if (deserializeJson(doc, json) == DeserializationError::Ok) {
+    SPIFFS.remove(configPath);
+    File f = SPIFFS.open(configPath, FILE_WRITE);
+    serializeJson(doc, f);
+    f.close();
+    server.send(200, "text/plain", "Config updated");
+  } else {
+    server.send(400, "text/plain", "Invalid JSON");
   }
-  file.print(json);
-  file.close();
-  server.send(200, "text/plain", "Config updated, restarting");
-  delay(1000);
-  ESP.restart();
 }
 
-// Handle POST /room/:id/activate
+// HTTP: GET /config
+void handleGetConfig() {
+  logRequest("GET /config");  // log route
+  File f = SPIFFS.open(configPath, FILE_READ);
+  if (!f) {
+    server.send(500, "application/json", "{\"error\":\"Config not available\"}");
+    return;
+  }
+  String json;
+  while (f.available()) json += char(f.read());
+  f.close();
+  server.send(200, "application/json", json);
+}
+
+// HTTP: GET /room/{id}
+void handleGetRoom() {
+  int id = server.pathArg(0).toInt();
+  logRequest("GET /room/" + String(id));  // log route
+  for (int i = 0; i < roomCount; i++) {
+    if (rooms[i].id == id) {
+      DynamicJsonDocument doc(4096);
+      doc["room_id"] = id;
+      doc["temperature"] = rooms[i].temp;
+      doc["humidity"] = rooms[i].hum;
+      doc["gas_level"] = rooms[i].gas;
+      doc["active"] = rooms[i].active;
+      String out;
+      serializeJson(doc, out);
+      server.send(200, "application/json", out);
+      return;
+    }
+  }
+  server.send(404, "text/plain", "Room not found");
+}
+
+// HTTP: GET /room
+// Returns count of active rooms
+void handleGetRoomInfo() {
+  logRequest("GET /room");  // log route
+  int activeCount = 0;
+  for (int i = 0; i < roomCount; i++) {
+    if (rooms[i].active) activeCount++;
+  }
+  DynamicJsonDocument doc(1024);
+  doc["active_rooms"] = activeCount;
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
+// HTTP: POST /room/{id}/activate
 void handleActivateRoom() {
-  String idStr = server.pathArg(0);
-  int id = idStr.toInt();
+  int id = server.pathArg(0).toInt();
+  logRequest("POST /room/" + String(id) + "/activate");  // log route
   for (int i = 0; i < roomCount; i++) {
     if (rooms[i].id == id) {
       rooms[i].active = true;
+      digitalWrite(rooms[i].actuatorPin, HIGH);
       saveConfig();
       server.send(200, "text/plain", "Room activated");
       return;
@@ -160,13 +234,14 @@ void handleActivateRoom() {
   server.send(404, "text/plain", "Room not found");
 }
 
-// Handle POST /room/:id/deactivate
+// HTTP: POST /room/{id}/deactivate
 void handleDeactivateRoom() {
-  String idStr = server.pathArg(0);
-  int id = idStr.toInt();
+  int id = server.pathArg(0).toInt();
+  logRequest("POST /room/" + String(id) + "/deactivate");  // log route
   for (int i = 0; i < roomCount; i++) {
     if (rooms[i].id == id) {
       rooms[i].active = false;
+      digitalWrite(rooms[i].actuatorPin, LOW);
       saveConfig();
       server.send(200, "text/plain", "Room deactivated");
       return;
@@ -175,37 +250,7 @@ void handleDeactivateRoom() {
   server.send(404, "text/plain", "Room not found");
 }
 
-// Handle GET /room/:id
-void handleGetRoom() {
-  String idStr = server.pathArg(0);
-  int id = idStr.toInt();
-  for (int i = 0; i < roomCount; i++) {
-    if (rooms[i].id == id) {
-      DynamicJsonDocument doc(1024);
-      doc["room_id"] = id;
-      doc["temperature"] = rooms[i].temp;
-      doc["humidity"] = rooms[i].hum;
-      doc["gas_level"] = rooms[i].gas;
-      doc["active"] = rooms[i].active;
-      String json;
-      serializeJson(doc, json);
-      server.send(200, "application/json", json);
-      return;
-    }
-  }
-  server.send(404, "text/plain", "Room not found");
-}
-
-void handleGetRoomInfo() {
-  DynamicJsonDocument doc(1024);
-  doc["rooms"] = roomCount;
-  String json;
-  serializeJson(doc, json);
-  server.send(200, "application/json", json);
-
-}
-
-// UDP Discovery
+// UDP Discovery Handler
 void handleUDP() {
   char packet[255];
   int packetSize = udp.parsePacket();
@@ -213,7 +258,9 @@ void handleUDP() {
     int len = udp.read(packet, 255);
     packet[len] = 0;
     if (strcmp(packet, "DISCOVER") == 0) {
-      String response = "EnvHub32-real," + WiFi.macAddress() + "," + WiFi.localIP().toString() + "," + String(roomCount);
+      int activeCount = 0;
+      for (int i = 0; i < roomCount; i++) if (rooms[i].active) activeCount++;
+      String response = "EnvHub32-real," + WiFi.macAddress() + "," + WiFi.localIP().toString() + "," + String(activeCount);
       udp.beginPacket(udp.remoteIP(), udp.remotePort());
       udp.print(response);
       udp.endPacket();
@@ -221,32 +268,60 @@ void handleUDP() {
   }
 }
 
-// Sensor reading task
+// Sensor reading task: skip inactive rooms
 void readSensors(void *pvParameters) {
   for (;;) {
     for (int i = 0; i < roomCount; i++) {
-      if (rooms[i].active) {
-        rooms[i].temp = rooms[i].dht->readTemperature();
-        rooms[i].hum = rooms[i].dht->readHumidity();
-        rooms[i].gas = analogRead(rooms[i].gasPin);
+      if (!rooms[i].active) continue;  // skip if inactive
+      float t = rooms[i].dht->readTemperature();
+      float h = rooms[i].dht->readHumidity();
+      int g = analogRead(rooms[i].gasPin);
+      if (!isnan(t) && !isnan(h)) {
+        rooms[i].temp = t;
+        rooms[i].hum = h;
+        rooms[i].gas = g;
       }
     }
-    vTaskDelay(2000 / portTICK_PERIOD_MS); // Every 2 seconds
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
   }
 }
 
 void setup() {
-  SPIFFS.begin(true); // Initialize SPIFFS, format if mount fails
+  Serial.begin(115200);
+  delay(3000);
+
+  SPIFFS.format();
+  if (!SPIFFS.begin(true)) {
+    Serial.println("SPIFFS mount failed");
+    return;
+  }
+
   loadConfig();
-  connectWiFi();
+  Serial.println("Config loaded");
+
+  for (int i = 0; i < roomCount; i++) {
+    pinMode(rooms[i].actuatorPin, OUTPUT);
+    digitalWrite(rooms[i].actuatorPin, rooms[i].active ? HIGH : LOW);
+  }
+
+  WiFi.begin(ssid.c_str(), password.c_str());
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print('.');
+  }
+  Serial.println("\nConnected, IP: " + WiFi.localIP().toString());
+
   server.on("/config", HTTP_POST, handlePostConfig);
-  server.on("/room/{id}", HTTP_GET, handleGetRoom);
+  server.on("/config", HTTP_GET, handleGetConfig);
+  server.on(UriBraces("/room/{}"), HTTP_GET, handleGetRoom);
   server.on("/room", HTTP_GET, handleGetRoomInfo);
-  server.on("/room/{id}/activate", HTTP_POST, handleActivateRoom);
-  server.on("/room/{id}/deactivate", HTTP_POST, handleDeactivateRoom);
+  server.on(UriBraces("/room/{}/activate"), HTTP_POST, handleActivateRoom);
+  server.on(UriBraces("/room/{}/deactivate"), HTTP_POST, handleDeactivateRoom);
   server.begin();
   udp.begin(UDP_PORT);
-  xTaskCreatePinnedToCore(readSensors, "SensorTask", 10000, NULL, 1, &sensorTask, 1);
+
+  xTaskCreatePinnedToCore(readSensors, "SensorTask", 10000, NULL, 1, NULL, 1);
 }
 
 void loop() {
