@@ -204,15 +204,22 @@ void handleGetRoom() {
 }
 
 // HTTP: GET /room
-// Returns count of active rooms
+// Modified to return list of active room IDs
 void handleGetRoomInfo() {
   logRequest("GET /room");  // log route
+  
+  DynamicJsonDocument doc(1024);
+  JsonArray activeRooms = doc.createNestedArray("active_rooms");
+  
   int activeCount = 0;
   for (int i = 0; i < roomCount; i++) {
-    if (rooms[i].active) activeCount++;
+    if (rooms[i].active) {
+      activeRooms.add(rooms[i].id);
+      activeCount++;
+    }
   }
-  DynamicJsonDocument doc(1024);
-  doc["active_rooms"] = activeCount;
+  
+  doc["active_count"] = activeCount;
   String out;
   serializeJson(doc, out);
   server.send(200, "application/json", out);
@@ -248,6 +255,30 @@ void handleDeactivateRoom() {
     }
   }
   server.send(404, "text/plain", "Room not found");
+}
+
+// HTTP: GET /active-rooms
+// New endpoint to return all active room data at once
+void handleGetActiveRooms() {
+  logRequest("GET /active-rooms");  // log route
+  
+  DynamicJsonDocument doc(4096);
+  JsonArray roomsArray = doc.createNestedArray("rooms");
+  
+  for (int i = 0; i < roomCount; i++) {
+    if (rooms[i].active) {
+      JsonObject roomObj = roomsArray.createNestedObject();
+      roomObj["room_id"] = rooms[i].id;
+      roomObj["name"] = rooms[i].name;
+      roomObj["temperature"] = rooms[i].temp;
+      roomObj["humidity"] = rooms[i].hum;
+      roomObj["gas_level"] = rooms[i].gas;
+    }
+  }
+  
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
 }
 
 // UDP Discovery Handler
@@ -318,6 +349,7 @@ void setup() {
   server.on("/room", HTTP_GET, handleGetRoomInfo);
   server.on(UriBraces("/room/{}/activate"), HTTP_POST, handleActivateRoom);
   server.on(UriBraces("/room/{}/deactivate"), HTTP_POST, handleDeactivateRoom);
+  server.on("/active-rooms", HTTP_GET, handleGetActiveRooms); // New endpoint for all active room data
   server.begin();
   udp.begin(UDP_PORT);
 
