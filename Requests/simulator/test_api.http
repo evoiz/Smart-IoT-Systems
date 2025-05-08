@@ -1,0 +1,36 @@
+# Define ESP32 IP for easy switching
+@ESP32_IP = 127.0.0.1:3000
+
+### Get full configuration
+GET http://{{ESP32_IP}}/config
+Accept: application/json
+
+### Update configuration (POST /config)
+POST http://{{ESP32_IP}}/config
+Content-Type: application/json
+
+{
+  "wifi": {
+    "ssid": "evoiz",
+    "password": "eee1998eee"
+  },
+  "rooms": [
+    { "id": 1, "name": "Room 1", "actuatorPin": 2, "dhtPin": 32, "gasPin": 36, "active": false },
+    { "id": 2, "name": "Room 2", "actuatorPin": 4, "dhtPin": 33, "gasPin": 39, "active": true }
+    # ... add more rooms as needed
+  ]
+}
+
+### Get info for all rooms
+GET http://{{ESP32_IP}}/room
+
+### Get info for specific room (e.g., room 1)
+GET http://{{ESP32_IP}}/room/1
+
+### Activate a room (room 1)
+POST http://{{ESP32_IP}}/room/1/activate
+
+### Deactivate a room (room 1)
+POST http://{{ESP32_IP}}/room/1/deactivate
+
+### Note: UDP discovery cannot be tested via HTTP client; use a UDP tool instead
