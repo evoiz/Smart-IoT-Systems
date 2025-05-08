@@ -28,7 +28,7 @@ GET http://{{ESP32_IP}}/room
 GET http://{{ESP32_IP}}/room/1
 
 ### Activate a room (room 1)
-POST http://{{ESP32_IP}}/room/1/activate
+POST http://{{ESP32_IP}}/room/4/activate
 
 ### Deactivate a room (room 1)
 POST http://{{ESP32_IP}}/room/1/deactivate
