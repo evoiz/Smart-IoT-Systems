@@ -118,7 +118,7 @@ class MainWindow(QMainWindow):
             self.auto_scan_btn.setText("Start Auto-Scan")
             logger.info("Auto-scan stopped")
         else:
-            self.scan_timer.start(10000)  # Scan every 10 seconds
+            self.scan_timer.start(5000)  # Scan every 5 seconds
             self.is_auto_scanning = True
             self.auto_scan_btn.setText("Stop Auto-Scan")
             logger.info("Auto-scan started")
