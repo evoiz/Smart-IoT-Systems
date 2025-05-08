@@ -138,11 +138,6 @@ class MainWindow(QMainWindow):
                 "rooms": int(self.device_table.item(row, 3).text())
             }
 
-        for i in reversed(range(self.layout.count())):
-            widget = self.layout.itemAt(i).widget()
-            if isinstance(widget, QPushButton) and widget.text().startswith("Room "):
-                widget.deleteLater()
-
         self.device_table.setRowCount(len(devices))
         for i, device in enumerate(devices):
             if device["ip"] in current_devices:
@@ -159,11 +154,6 @@ class MainWindow(QMainWindow):
                 self.device_table.setItem(i, 2, QTableWidgetItem(device["ip"]))
                 self.device_table.setItem(i, 3, QTableWidgetItem(str(device["rooms"])))
 
-            for j in range(device["rooms"]):
-                btn = QPushButton(f"Room {j+1}")
-                btn.clicked.connect(lambda _, ip=device["ip"], id=j+1: self.get_room_data(ip, id))
-                self.layout.insertWidget(self.layout.count() - 1, btn)
-
         logger.info(f"Updated device table with {len(devices)} devices")
 
     def on_device_select(self, row, column):
@@ -177,19 +167,6 @@ class MainWindow(QMainWindow):
         logger.info(f"Double-clicked on device {ip}, opening room data dialog")
         dialog = RoomDataDialog(ip, rooms, self)
         dialog.exec()
-
-    def get_room_data(self, ip, room_id):
-        logger.info(f"Requesting data for room {room_id} from {ip}")
-        try:
-            response = requests.get(f"http://{ip}/room/{room_id}", timeout=5)
-            response.raise_for_status()
-            data = response.json()
-            logger.info(f"Successfully fetched data for room {room_id} from {ip}")
-            msg = f"Temperature: {data['temperature']}°C\nHumidity: {data['humidity']}%\nGas Level: {data['gas_level']} ppm"
-            QMessageBox.information(self, f"Room {room_id}", msg)
-        except requests.RequestException as e:
-            logger.error(f"Failed to fetch data for room {room_id} from {ip}: {str(e)}")
-            QMessageBox.critical(self, "Error", f"Failed to connect to device: {str(e)}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
