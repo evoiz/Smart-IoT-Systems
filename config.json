@@ -1,0 +1,28 @@
+{
+    "wifi": {
+      "ssid": "evoiz",
+      "password": "eee1998eee"
+    },
+    "rooms": [
+      {
+        "id": 1,
+        "name": "Room 1",
+        "actuatorPin": 2,
+        "dhtPin": 4,
+        "mq9Pin": 34,
+        "mq2Pin": 35,
+        "mq135Pin": 36,
+        "active": false
+      },
+      {
+        "id": 2,
+        "name": "Room 2",
+        "actuatorPin": 5,
+        "dhtPin": 12,
+        "mq9Pin": 32,
+        "mq2Pin": 33,
+        "mq135Pin": 39,
+        "active": false
+      }
+    ]
+  }

@@ -1,5 +1,6 @@
 # Define ESP32 IP for easy switching
-@ESP32_IP = 192.168.252.79
+#@ESP32_IP = 192.168.252.79
+@ESP32_IP = 192.168.1.6
 
 ### Get full configuration
 GET http://{{ESP32_IP}}/config
@@ -10,16 +11,33 @@ POST http://{{ESP32_IP}}/config
 Content-Type: application/json
 
 {
-  "wifi": {
-    "ssid": "evoiz",
-    "password": "eee1998eee"
-  },
-  "rooms": [
-    { "id": 1, "name": "Room 1", "actuatorPin": 2, "dhtPin": 32, "gasPin": 36, "active": false },
-    { "id": 2, "name": "Room 2", "actuatorPin": 4, "dhtPin": 33, "gasPin": 39, "active": true }
-    # ... add more rooms as needed
-  ]
-}
+    "wifi": {
+      "ssid": "evoiz",
+      "password": "eee1998eee"
+    },
+    "rooms": [
+      {
+        "id": 1,
+        "name": "Room 1",
+        "actuatorPin": 2,
+        "dhtPin": 4,
+        "mq9Pin": 34,
+        "mq2Pin": 35,
+        "mq135Pin": 36,
+        "active": false
+      },
+      {
+        "id": 2,
+        "name": "Room 2",
+        "actuatorPin": 5,
+        "dhtPin": 12,
+        "mq9Pin": 32,
+        "mq2Pin": 33,
+        "mq135Pin": 39,
+        "active": false
+      }
+    ]
+  }
 
 ### Get info for all rooms
 GET http://{{ESP32_IP}}/room
@@ -28,9 +46,9 @@ GET http://{{ESP32_IP}}/room
 GET http://{{ESP32_IP}}/room/1
 
 ### Activate a room (room 1)
-POST http://{{ESP32_IP}}/room/4/activate
+POST http://{{ESP32_IP}}/room/2/activate
 
 ### Deactivate a room (room 1)
-POST http://{{ESP32_IP}}/room/1/deactivate
+POST http://{{ESP32_IP}}/room/2/deactivate
 
 ### Note: UDP discovery cannot be tested via HTTP client; use a UDP tool instead

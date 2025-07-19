@@ -4,8 +4,8 @@
 #include <DHT.h>
 #include <ArduinoJson.h>
 #include <SPIFFS.h>
-#include <uri/UriBraces.h>  
-#include <uri/UriRegex.h>     
+#include <uri/UriBraces.h>
+#include <uri/UriRegex.h>
 
 // Config file path on SPIFFS
 const char* configPath = "/config.json";
@@ -20,15 +20,20 @@ WiFiUDP udp;
 const int UDP_PORT = 1234;
 
 // DHT Sensor type
-#define DHTTYPE DHT22
+#define DHTTYPE DHT11
 
 // Maximum rooms
-#define MAX_ROOMS 16
+#define MAX_ROOMS 2
 
-// Default pins for each room (actuator, DHT, gas)
-const int defaultActuatorPins[MAX_ROOMS] = {2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26};
-const int defaultDHTPins[MAX_ROOMS]      = {32, 33, 34, 35, 36, 39, 32, 33, 34, 35, 36, 39, 32, 33, 34, 35};
-const int defaultGasPins[MAX_ROOMS]      = {36, 39, 32, 33, 34, 35, 36, 39, 32, 33, 34, 35, 36, 39, 32, 33};
+// Default pins for each room (actuator, DHT, MQ9, MQ2, MQ135)
+const int defaultActuatorPins[MAX_ROOMS] = {2, 5};
+const int defaultDHTPins[MAX_ROOMS] = {4, 12};
+const int defaultMQ9Pins[MAX_ROOMS] = {34, 32};
+const int defaultMQ2Pins[MAX_ROOMS] = {35, 33};
+const int defaultMQ135Pins[MAX_ROOMS] = {36, 39};
+
+// متغير عالمي جديد للتحكم بمسح الإعدادات
+int clear = 0;
 
 // Room configuration and sensor structure
 struct RoomConfig {
@@ -36,12 +41,16 @@ struct RoomConfig {
   String name;
   int actuatorPin;
   int dhtPin;
-  int gasPin;
+  int mq9Pin;
+  int mq2Pin;
+  int mq135Pin;
   bool active;
   DHT* dht;
   float temp;
   float hum;
-  int gas;
+  int mq9;
+  int mq2;
+  int mq135;
 };
 
 RoomConfig rooms[MAX_ROOMS];
@@ -50,8 +59,8 @@ int roomCount = 0;
 // Create default config.json in SPIFFS
 void createDefaultConfig() {
   DynamicJsonDocument doc(4096);
-  doc["wifi"]["ssid"] = "evoiz";
-  doc["wifi"]["password"] = "eee1998eee";
+  doc["wifi"]["ssid"] = "Kali";
+  doc["wifi"]["password"] = "y=e^(cos(xy))";
 
   JsonArray roomArray = doc.createNestedArray("rooms");
   for (int i = 0; i < MAX_ROOMS; i++) {
@@ -60,7 +69,9 @@ void createDefaultConfig() {
     obj["name"] = "Room " + String(i + 1);
     obj["actuatorPin"] = defaultActuatorPins[i];
     obj["dhtPin"] = defaultDHTPins[i];
-    obj["gasPin"] = defaultGasPins[i];
+    obj["mq9Pin"] = defaultMQ9Pins[i];
+    obj["mq2Pin"] = defaultMQ2Pins[i];
+    obj["mq135Pin"] = defaultMQ135Pins[i];
     obj["active"] = false;
   }
 
@@ -104,7 +115,9 @@ bool loadConfig() {
     rooms[i].name = arr[i]["name"].as<String>();
     rooms[i].actuatorPin = arr[i]["actuatorPin"].as<int>();
     rooms[i].dhtPin = arr[i]["dhtPin"].as<int>();
-    rooms[i].gasPin = arr[i]["gasPin"].as<int>();
+    rooms[i].mq9Pin = arr[i]["mq9Pin"].as<int>();
+    rooms[i].mq2Pin = arr[i]["mq2Pin"].as<int>();
+    rooms[i].mq135Pin = arr[i]["mq135Pin"].as<int>();
     rooms[i].active = arr[i]["active"].as<bool>();
     rooms[i].dht = new DHT(rooms[i].dhtPin, DHTTYPE);
     rooms[i].dht->begin();
@@ -124,7 +137,9 @@ void saveConfig() {
     obj["name"] = rooms[i].name;
     obj["actuatorPin"] = rooms[i].actuatorPin;
     obj["dhtPin"] = rooms[i].dhtPin;
-    obj["gasPin"] = rooms[i].gasPin;
+    obj["mq9Pin"] = rooms[i].mq9Pin;
+    obj["mq2Pin"] = rooms[i].mq2Pin;
+    obj["mq135Pin"] = rooms[i].mq135Pin;
     obj["active"] = rooms[i].active;
   }
   File f = SPIFFS.open(configPath, FILE_WRITE);
@@ -150,7 +165,7 @@ void logRequest(const String& route) {
 
 // HTTP: POST /config
 void handlePostConfig() {
-  logRequest("POST /config");  // log route
+  logRequest("POST /config");
   if (!server.hasArg("plain")) {
     server.send(400, "text/plain", "No JSON data provided");
     return;
@@ -170,7 +185,7 @@ void handlePostConfig() {
 
 // HTTP: GET /config
 void handleGetConfig() {
-  logRequest("GET /config");  // log route
+  logRequest("GET /config");
   File f = SPIFFS.open(configPath, FILE_READ);
   if (!f) {
     server.send(500, "application/json", "{\"error\":\"Config not available\"}");
@@ -182,17 +197,35 @@ void handleGetConfig() {
   server.send(200, "application/json", json);
 }
 
+// HTTP: POST /set-clear
+void handleSetClear() {
+  logRequest("POST /set-clear");
+  if (server.hasArg("value")) {
+    String value = server.arg("value");
+    if (value == "1") {
+      clear = 1;
+      server.send(200, "text/plain", "Clear flag set to 1");
+    } else {
+      server.send(400, "text/plain", "Invalid value, use value=1");
+    }
+  } else {
+    server.send(400, "text/plain", "Missing value parameter");
+  }
+}
+
 // HTTP: GET /room/{id}
 void handleGetRoom() {
   int id = server.pathArg(0).toInt();
-  logRequest("GET /room/" + String(id));  // log route
+  logRequest("GET /room/" + String(id));
   for (int i = 0; i < roomCount; i++) {
     if (rooms[i].id == id) {
       DynamicJsonDocument doc(4096);
       doc["room_id"] = id;
       doc["temperature"] = rooms[i].temp;
       doc["humidity"] = rooms[i].hum;
-      doc["gas_level"] = rooms[i].gas;
+      doc["mq9_level"] = rooms[i].mq9;
+      doc["mq2_level"] = rooms[i].mq2;
+      doc["mq135_level"] = rooms[i].mq135;
       doc["active"] = rooms[i].active;
       String out;
       serializeJson(doc, out);
@@ -204,13 +237,10 @@ void handleGetRoom() {
 }
 
 // HTTP: GET /room
-// Modified to return list of active room IDs
 void handleGetRoomInfo() {
-  logRequest("GET /room");  // log route
-  
+  logRequest("GET /room");
   DynamicJsonDocument doc(1024);
   JsonArray activeRooms = doc.createNestedArray("active_rooms");
-  
   int activeCount = 0;
   for (int i = 0; i < roomCount; i++) {
     if (rooms[i].active) {
@@ -218,7 +248,6 @@ void handleGetRoomInfo() {
       activeCount++;
     }
   }
-  
   doc["active_count"] = activeCount;
   String out;
   serializeJson(doc, out);
@@ -228,7 +257,7 @@ void handleGetRoomInfo() {
 // HTTP: POST /room/{id}/activate
 void handleActivateRoom() {
   int id = server.pathArg(0).toInt();
-  logRequest("POST /room/" + String(id) + "/activate");  // log route
+  logRequest("POST /room/" + String(id) + "/activate");
   for (int i = 0; i < roomCount; i++) {
     if (rooms[i].id == id) {
       rooms[i].active = true;
@@ -244,7 +273,7 @@ void handleActivateRoom() {
 // HTTP: POST /room/{id}/deactivate
 void handleDeactivateRoom() {
   int id = server.pathArg(0).toInt();
-  logRequest("POST /room/" + String(id) + "/deactivate");  // log route
+  logRequest("POST /room/" + String(id) + "/deactivate");
   for (int i = 0; i < roomCount; i++) {
     if (rooms[i].id == id) {
       rooms[i].active = false;
@@ -258,13 +287,10 @@ void handleDeactivateRoom() {
 }
 
 // HTTP: GET /active-rooms
-// New endpoint to return all active room data at once
 void handleGetActiveRooms() {
-  logRequest("GET /active-rooms");  // log route
-  
+  logRequest("GET /active-rooms");
   DynamicJsonDocument doc(4096);
   JsonArray roomsArray = doc.createNestedArray("rooms");
-  
   for (int i = 0; i < roomCount; i++) {
     if (rooms[i].active) {
       JsonObject roomObj = roomsArray.createNestedObject();
@@ -272,10 +298,11 @@ void handleGetActiveRooms() {
       roomObj["name"] = rooms[i].name;
       roomObj["temperature"] = rooms[i].temp;
       roomObj["humidity"] = rooms[i].hum;
-      roomObj["gas_level"] = rooms[i].gas;
+      roomObj["mq9_level"] = rooms[i].mq9;
+      roomObj["mq2_level"] = rooms[i].mq2;
+      roomObj["mq135_level"] = rooms[i].mq135;
     }
   }
-  
   String out;
   serializeJson(doc, out);
   server.send(200, "application/json", out);
@@ -306,12 +333,19 @@ void readSensors(void *pvParameters) {
       if (!rooms[i].active) continue;  // skip if inactive
       float t = rooms[i].dht->readTemperature();
       float h = rooms[i].dht->readHumidity();
-      int g = analogRead(rooms[i].gasPin);
+      int mq9 = analogRead(rooms[i].mq9Pin);
+      int mq2 = analogRead(rooms[i].mq2Pin);
+      int mq135 = analogRead(rooms[i].mq135Pin);
       if (!isnan(t) && !isnan(h)) {
         rooms[i].temp = t;
         rooms[i].hum = h;
-        rooms[i].gas = g;
+        rooms[i].mq9 = mq9;
+        rooms[i].mq2 = mq2;
+        rooms[i].mq135 = mq135;
       }
+      rooms[i].mq9 = mq9;
+      rooms[i].mq2 = mq2;
+      rooms[i].mq135 = mq135;
     }
     vTaskDelay(2000 / portTICK_PERIOD_MS);
   }
@@ -321,7 +355,7 @@ void setup() {
   Serial.begin(115200);
   delay(3000);
 
-  SPIFFS.format();
+  ///SPIFFS.format();
   if (!SPIFFS.begin(true)) {
     Serial.println("SPIFFS mount failed");
     return;
@@ -330,9 +364,13 @@ void setup() {
   loadConfig();
   Serial.println("Config loaded");
 
+  analogSetAttenuation(ADC_11db);
   for (int i = 0; i < roomCount; i++) {
     pinMode(rooms[i].actuatorPin, OUTPUT);
     digitalWrite(rooms[i].actuatorPin, rooms[i].active ? HIGH : LOW);
+    //pinMode(rooms[i].mq9Pin, INPUT);
+    //pinMode(rooms[i].mq2Pin, INPUT);
+    //pinMode(rooms[i].mq135Pin, INPUT);
   }
 
   WiFi.begin(ssid.c_str(), password.c_str());
@@ -343,13 +381,15 @@ void setup() {
   }
   Serial.println("\nConnected, IP: " + WiFi.localIP().toString());
 
+  // Existing server routes
   server.on("/config", HTTP_POST, handlePostConfig);
   server.on("/config", HTTP_GET, handleGetConfig);
+  server.on("/set-clear", HTTP_POST, handleSetClear);  // نقطة نهاية جديدة لتعيين clear
   server.on(UriBraces("/room/{}"), HTTP_GET, handleGetRoom);
   server.on("/room", HTTP_GET, handleGetRoomInfo);
   server.on(UriBraces("/room/{}/activate"), HTTP_POST, handleActivateRoom);
   server.on(UriBraces("/room/{}/deactivate"), HTTP_POST, handleDeactivateRoom);
-  server.on("/active-rooms", HTTP_GET, handleGetActiveRooms); // New endpoint for all active room data
+  server.on("/active-rooms", HTTP_GET, handleGetActiveRooms);
   server.begin();
   udp.begin(UDP_PORT);
 
@@ -359,4 +399,16 @@ void setup() {
 void loop() {
   server.handleClient();
   handleUDP();
+
+  // التحقق من قيمة clear ومسح config.json إذا كانت 1
+  if (clear == 1) {
+    if (SPIFFS.remove(configPath)) {
+      Serial.println("Config deleted");
+      delay(1000); // تأخير لضمان استقرار النظام
+      ESP.restart(); // إعادة تشغيل الجهاز لتحميل الإعدادات الافتراضية
+    } else {
+      Serial.println("Failed to delete config");
+    }
+    clear = 0; // إعادة تعيين clear إلى 0 بعد المحاولة
+  }
 }
