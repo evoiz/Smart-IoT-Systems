@@ -1,9 +1,10 @@
 import sys
 import socket
 import logging
-from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QMessageBox, QDialog, QComboBox, QProgressBar, QLabel
+from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QMessageBox, QDialog, QComboBox, QProgressBar, QLabel, QLineEdit, QSpinBox, QFormLayout, QCheckBox
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt
 import requests
+import json
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger(__name__)
@@ -27,12 +28,177 @@ class NetworkThread(QThread):
         sock.close()
         self.devicesFound.emit(devices)
 
+class ConfigDialog(QDialog):
+    def __init__(self, ip, parent=None):
+        super().__init__(parent)
+        self.ip = ip
+        self.setWindowTitle("ESP32 Configuration")
+        self.setFixedSize(400, 520)
+        self.layout = QFormLayout(self)
+        self.ssid_input = QLineEdit()
+        self.layout.addRow("WiFi SSID:", self.ssid_input)
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.layout.addRow("WiFi Password:", self.password_input)
+        self.max_rooms_spin = QSpinBox()
+        self.max_rooms_spin.setRange(1, 10)
+        self.max_rooms_spin.setValue(2)
+        self.max_rooms_spin.valueChanged.connect(self.update_room_combo)
+        self.layout.addRow("Max Rooms:", self.max_rooms_spin)
+        self.room_combo = QComboBox()
+        self.room_combo.currentIndexChanged.connect(self.update_room_fields)
+        self.layout.addRow("Select Room:", self.room_combo)
+        self.active_checkbox = QCheckBox("Activate Room")
+        self.active_checkbox.stateChanged.connect(self.toggle_room_activation)
+        self.layout.addRow("Room Status:", self.active_checkbox)
+        self.actuator_pin = QSpinBox()
+        self.actuator_pin.setRange(0, 39)
+        self.layout.addRow("Actuator Pin:", self.actuator_pin)
+        self.dht_pin = QSpinBox()
+        self.dht_pin.setRange(0, 39)
+        self.layout.addRow("DHT Pin:", self.dht_pin)
+        self.mq9_pin = QSpinBox()
+        self.mq9_pin.setRange(0, 39)
+        self.layout.addRow("MQ9 Pin:", self.mq9_pin)
+        self.mq2_pin = QSpinBox()
+        self.mq2_pin.setRange(0, 39)
+        self.layout.addRow("MQ2 Pin:", self.mq2_pin)
+        self.mq135_pin = QSpinBox()
+        self.mq135_pin.setRange(0, 39)
+        self.layout.addRow("MQ135 Pin:", self.mq135_pin)
+        self.send_btn = QPushButton("Send Configuration")
+        self.send_btn.clicked.connect(self.send_config)
+        self.layout.addWidget(self.send_btn)
+        self.error_label = QLabel("")
+        self.layout.addWidget(self.error_label)
+        self.current_config = {}
+        self.load_current_config()
+
+    def load_current_config(self):
+        try:
+            response = requests.get(f"http://{self.ip}/config", timeout=5)
+            response.raise_for_status()
+            self.current_config = response.json()
+            self.ssid_input.setText(self.current_config.get("wifi", {}).get("ssid", ""))
+            self.password_input.setText(self.current_config.get("wifi", {}).get("password", ""))
+            rooms = self.current_config.get("rooms", [])
+            self.max_rooms_spin.setValue(len(rooms) if rooms else 2)
+            self.update_room_combo()
+        except requests.exceptions.RequestException as e:
+            self.error_label.setText(f"Error loading config: {str(e)}")
+
+    def update_room_combo(self):
+        self.room_combo.clear()
+        max_rooms = self.max_rooms_spin.value()
+        for i in range(max_rooms):
+            self.room_combo.addItem(f"Room {i+1}", i+1)
+        self.update_room_fields()
+
+    def update_room_fields(self):
+        if not self.current_config.get("rooms"):
+            return
+        room_id = self.room_combo.currentData()
+        if not room_id:
+            room_id = 1
+        for room in self.current_config.get("rooms", []):
+            if room["id"] == room_id:
+                self.actuator_pin.setValue(room.get("actuatorPin", 0))
+                self.dht_pin.setValue(room.get("dhtPin", 0))
+                self.mq9_pin.setValue(room.get("mq9Pin", 0))
+                self.mq2_pin.setValue(room.get("mq2Pin", 0))
+                self.mq135_pin.setValue(room.get("mq135Pin", 0))
+                self.active_checkbox.setChecked(room.get("active", False))
+                break
+        else:
+            self.actuator_pin.setValue(0)
+            self.dht_pin.setValue(0)
+            self.mq9_pin.setValue(0)
+            self.mq2_pin.setValue(0)
+            self.mq135_pin.setValue(0)
+            self.active_checkbox.setChecked(False)
+
+    def toggle_room_activation(self, state):
+        room_id = self.room_combo.currentData()
+        if not room_id:
+            return
+        # Fetch current config to ensure no data loss
+        try:
+            response = requests.get(f"http://{self.ip}/config", timeout=5)
+            response.raise_for_status()
+            config = response.json()
+        except requests.exceptions.RequestException as e:
+            self.error_label.setText(f"Error fetching config: {str(e)}")
+            return
+
+        # Update activation state for the selected room
+        for room in config.get("rooms", []):
+            if room["id"] == room_id:
+                room["active"] = bool(state)
+                break
+
+        # Send activation request
+        endpoint = f"http://{self.ip}/room/{room_id}/{'activate' if state else 'deactivate'}"
+        try:
+            response = requests.post(endpoint, timeout=5)
+            response.raise_for_status()
+            # Update ESP32 config to reflect activation state
+            response = requests.post(f"http://{self.ip}/config", json=config, timeout=5)
+            response.raise_for_status()
+            self.current_config = config
+            self.error_label.setText(f"Room {room_id} {'activated' if state else 'deactivated'}")
+        except requests.exceptions.RequestException as e:
+            self.error_label.setText(f"Error updating room status: {str(e)}")
+
+    def send_config(self):
+        try:
+            response = requests.get(f"http://{self.ip}/config", timeout=5)
+            response.raise_for_status()
+            config = response.json()
+        except requests.exceptions.RequestException as e:
+            self.error_label.setText(f"Error fetching current config: {str(e)}")
+            return
+
+        config["wifi"]["ssid"] = self.ssid_input.text()
+        config["wifi"]["password"] = self.password_input.text()
+
+        max_rooms = self.max_rooms_spin.value()
+        current_room_id = self.room_combo.currentData() or 1
+        new_rooms = []
+        for i in range(1, max_rooms + 1):
+            room = next((r for r in config.get("rooms", []) if r["id"] == i), {
+                "id": i,
+                "name": f"Room {i}",
+                "actuatorPin": 0,
+                "dhtPin": 0,
+                "mq9Pin": 0,
+                "mq2Pin": 0,
+                "mq135Pin": 0,
+                "active": False
+            })
+            if i == current_room_id:
+                room["actuatorPin"] = self.actuator_pin.value()
+                room["dhtPin"] = self.dht_pin.value()
+                room["mq9Pin"] = self.mq9_pin.value()
+                room["mq2Pin"] = self.mq2_pin.value()
+                room["mq135Pin"] = self.mq135_pin.value()
+                room["active"] = self.active_checkbox.isChecked()
+            new_rooms.append(room)
+        config["rooms"] = new_rooms
+
+        try:
+            response = requests.post(f"http://{self.ip}/config", json=config, timeout=5)
+            response.raise_for_status()
+            self.current_config = config
+            self.error_label.setText("Configuration sent successfully")
+        except requests.exceptions.RequestException as e:
+            self.error_label.setText(f"Error sending config: {str(e)}")
+
 class RoomDataDialog(QDialog):
     def __init__(self, ip, parent=None):
         super().__init__(parent)
         self.ip = ip
         self.setWindowTitle(f"Active Room Data for {ip}")
-        self.setFixedSize(350, 300)  # Fixed size for content
+        self.setFixedSize(350, 300)
         self.layout = QVBoxLayout(self)
         self.room_combo = QComboBox()
         self.room_combo.currentIndexChanged.connect(self.update_room_data)
@@ -105,7 +271,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Environmental Monitoring")
-        self.setFixedSize(600, 400)  # Fixed size for content
+        self.setFixedSize(600, 400)
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.layout = QVBoxLayout(self.central_widget)
@@ -122,6 +288,10 @@ class MainWindow(QMainWindow):
         self.view_rooms_btn.clicked.connect(self.view_active_rooms)
         self.view_rooms_btn.setEnabled(False)
         self.layout.addWidget(self.view_rooms_btn)
+        self.settings_btn = QPushButton("Settings")
+        self.settings_btn.clicked.connect(self.open_settings_dialog)
+        self.settings_btn.setEnabled(False)
+        self.layout.addWidget(self.settings_btn)
         self.selected_ip = None
         self.is_auto_scanning = False
         self.scan_timer = QTimer(self)
@@ -161,6 +331,7 @@ class MainWindow(QMainWindow):
     def on_device_select(self, row, column):
         self.selected_ip = self.device_table.item(row, 2).text()
         self.view_rooms_btn.setEnabled(True)
+        self.settings_btn.setEnabled(True)
 
     def on_row_double_clicked(self, index):
         row = index.row()
@@ -174,6 +345,11 @@ class MainWindow(QMainWindow):
     def open_room_data_dialog(self, ip):
         dialog = RoomDataDialog(ip, self)
         dialog.exec()
+
+    def open_settings_dialog(self):
+        if self.selected_ip:
+            dialog = ConfigDialog(self.selected_ip, self)
+            dialog.exec()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
